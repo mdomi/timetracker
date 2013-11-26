@@ -33,22 +33,31 @@ opt_parser = OptionParser.new do |opts|
     options[:print] = d || date
     options[:save] = false
   end
-  opts.on('-m', '--message MESSAGE', 'add a message to the current day') {|message| options[:message] = message.empty? ? '' : message.gsub(/\s+/, ' ').chomp}
+  
+  opts.on('-m', '--message MESSAGE', 'add a message to the current day') do |message|
+    options[:message] = message.empty? ? '' : message.gsub(/\s+/, ' ').chomp
+  end
+  
   opts.on('-d', '--dry-run', 'print what the line would have looked like, but do not modify the file') do 
-    options[:dryrun] = true
     options[:save] = false
   end
+  
   opts.on('-q', '--quitting-time [HOURS]', 'print the time you would have to stop working to meet 8 hours (or the number of provided hours)') do |hours|
     options[:quitting] = (hours || '8').to_f
     options[:save] = false
   end
+  
   opts.on('-r', '--repair', 'reparse all lines in the file to ensure the hours worked is correct') {options[:repair] = true}
+  
   opts.on('-l', '--list', 'list the most recent entries (limited by -c)') do
     options[:list] = true
     options[:save] = false
   end
   opts.on('-u', '--undo', 'undo the more recent entry') {options[:undo] = true}
-  opts.on('-c', '--count [COUNT]', 'restrict list-based functionality to the most recent [COUNT]') {|count| options[:count] = count.nil? ? 5 : count.to_i}
+
+  opts.on('-c', '--count [COUNT]', 'restrict list-based functionality to the most recent [COUNT]') do |count|
+    options[:count] = count.nil? ? 5 : count.to_i
+  end
 
   opts.on_tail('-h', '-?', '--help', 'brief help message') do
 	puts opts
@@ -65,27 +74,74 @@ end
 
 filename = ARGV[0] || abort("A timesheet storage file must be provided")
 
+class EntryRow
+  attr_accessor :message
+
+  def initialize(date, time, entries=[], message='')
+    @date = date
+    @time = time
+    @entries = entries
+    @message = message
+    self.repair
+  end
+
+  def to_s
+    self.to_line
+  end
+
+  def to_line
+    row = [] << @date << @time
+    row.concat(@entries) unless @entries.empty?
+    row << @message unless @message.empty?
+    row.join(' ' * 4)
+  end
+
+  def repair
+    @time = sprintf('%4.1f', self.total_time / (60.0 * 60.0))
+  end
+
+  def total_time
+    @entries.to_enum(:each_slice, 2).inject(0) do |sum, pair|
+      (pair.length < 2) ? sum : sum + (Time.parse(pair[1]) - Time.parse(pair[0]))
+    end
+  end
+
+  def has_started_day?
+    not @entries.empty?
+  end
+
+  def is_currently_working?
+    @entries.length % 2 == 1
+  end
+
+  def add_entry(entry)
+    @entries << entry
+    self.repair
+  end
+
+  def pop_entry
+    @entries.delete_at(-1)
+    self.repair
+  end
+
+  def quitting_time(hours)
+    (Time.parse(@entries[-1]) + (hours * 3600.0 - self.total_time)).strftime('%X')
+  end
+
+  def last_entry
+    @entries[-1]
+  end
+end
+
 def parse_row(line)
   row = line.chomp.split(/\s{2,}|\t/)
+  message = row[-1]
+  entries = row[2..-2]
   if row[-1] =~ /^\d{2}:\d{2}:\d{2}$/
-    row << ''
+    message = ''
+    entries = row[2..-1]
   end
-  
-  row
-end
-
-def to_line(row)
-  row.reject {|s| s.empty?}.join(' ' * 4)
-end
-
-def repair_row(row)
-  total_time = row[2..-2].to_enum(:each_slice, 2).inject(0) do |sum, pair|
-    (pair.length < 2) ? sum : sum + (Time.parse(pair[1]) - Time.parse(pair[0]))
-  end
-
-  row[1] = sprintf('%4.1f', total_time / (60.0 * 60.0))
-
-  row
+  EntryRow.new(row[0], row[1], entries, message)
 end
 
 lines = File.readable?(filename) ? File.open(filename).readlines : []
@@ -100,41 +156,33 @@ elsif options[:quitting]
     puts 'You must have started the day to calculate quitting time.'
     exit
   end
-  row = parse_row(row)[2..-2]
+  row = parse_row(row)
   
-  if row.length % 2 == 0
+  unless row.is_currently_working?
     puts 'You must be currently working to calculate quitting time.'
     exit
   end
 
-  total_time = row[0...-1].to_enum(:each_slice, 2).inject(0) do |sum, pair|
-    sum + (Time.parse(pair[1]) - Time.parse(pair[0]))
-  end
-
-  match = (Time.parse(row[-1]) + (options[:quitting] * 3600.0 - total_time)).strftime('%X')
+  match = row.quitting_time(options[:quitting])
 elsif options[:message]
   match = lines.grep(/^#{date}/) do |line|
     row = parse_row(line)
-
-    row[-1] = options[:message]
-    line.replace(to_line(row))
+    row.message = options[:message]
+    line.replace(row.to_line)
   end
 
   if match.empty?
-    match << to_line([date, '0.0', options[:message], "\n"])
+    match << EntryRow.new(date, '0.0', [], options[:message]).to_line
     lines << match[0]
   end
 elsif options[:repair]
   lines.each do |line|
-    row = parse_row(line)
-    line.replace(to_line(repair_row(row)))
+    line.replace(parse_row(line).to_line)
   end
 elsif options[:undo]
   row = parse_row(lines[-1])
-  if row.size > 3
-    row.delete_at(-2)
-  end
-  match = to_line(repair_row(row))
+  row.pop_entry
+  match = row.to_line
 
   lines[-1].replace(match)
 
@@ -143,13 +191,12 @@ elsif options[:list]
 else
   match = lines.grep(/^#{date}/) do |line|
     row = parse_row(line)
-    row = row[0..-2] << time << row[-1]
-
-    line.replace(to_line(repair_row(row)))
+    row.add_entry(time)
+    line.replace(row.to_line)
   end
 
   if match.empty?
-    match << to_line([date, ' 0.0', time, "\n"])
+    match << EntryRow.new(date, '0.0', [time], '').to_line
     lines << match[0]
   end
 end
