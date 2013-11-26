@@ -22,19 +22,31 @@ now = Time.now
 date = now.strftime('%Y-%m-%d')
 time = now.strftime('%X')
 
-options = {:count => 5}
+options = {:count => 5, :save => true}
 
 opt_parser = OptionParser.new do |opts|
   opts.banner = "Usage:\n\ttimetracker [options] [file]"
   opts.separator ''
   opts.separator 'Options:'
 
-  opts.on('-p', '--print [DATE]', 'print the row for the current day') {|d| options[:print] = d || date}
+  opts.on('-p', '--print [DATE]', 'print the row for the current day') do |d|
+    options[:print] = d || date
+    options[:save] = false
+  end
   opts.on('-m', '--message MESSAGE', 'add a message to the current day') {|message| options[:message] = message.empty? ? '' : message.gsub(/\s+/, ' ').chomp}
-  opts.on('-d', '--dry-run', 'print what the line would have looked like, but do not modify the file') {options[:dryrun] = true}
-  opts.on('-q', '--quitting-time [HOURS]', 'print the time you would have to stop working to meet 8 hours (or the number of provided hours)') {|hours| options[:quitting] = (hours || '8').to_f}
+  opts.on('-d', '--dry-run', 'print what the line would have looked like, but do not modify the file') do 
+    options[:dryrun] = true
+    options[:save] = false
+  end
+  opts.on('-q', '--quitting-time [HOURS]', 'print the time you would have to stop working to meet 8 hours (or the number of provided hours)') do |hours|
+    options[:quitting] = (hours || '8').to_f
+    options[:save] = false
+  end
   opts.on('-r', '--repair', 'reparse all lines in the file to ensure the hours worked is correct') {options[:repair] = true}
-  opts.on('-l', '--list', 'list the most recent entries (limited by -c)') {options[:list] = true}
+  opts.on('-l', '--list', 'list the most recent entries (limited by -c)') do
+    options[:list] = true
+    options[:save] = false
+  end
   opts.on('-u', '--undo', 'undo the more recent entry') {options[:undo] = true}
   opts.on('-c', '--count [COUNT]', 'restrict list-based functionality to the most recent [COUNT]') {|count| options[:count] = count.nil? ? 5 : count.to_i}
 
@@ -52,8 +64,6 @@ rescue
 end
 
 filename = ARGV[0] || abort("A timesheet storage file must be provided")
-
-should_only_print = !!(options[:dryrun] or options[:print] or options[:quitting] or options[:list])
 
 def parse_row(line)
   row = line.chomp.split(/\s{2,}|\t/)
@@ -144,5 +154,5 @@ else
   end
 end
 
-File.open(filename, 'w').puts lines unless should_only_print
+File.open(filename, 'w').puts lines if options[:save]
 puts match
